@@ -3,17 +3,14 @@ package com.snapswap.retry
 import akka.actor.ActorSystem
 import akka.event.Logging
 
-import scala.concurrent.duration.FiniteDuration
 import scala.concurrent.{ExecutionContext, Future}
 import scala.util.control.NonFatal
 
 
 class RetryableAction(action: => Future[Unit],
                       actionName: String,
-                      minBackoff: FiniteDuration,
-                      maxBackoff: FiniteDuration,
-                      maxAttempts: Int,
-                      randomFactor: Double)
+                      attemptParams: AttemptParams,
+                      maxRetryAttempts: Int)
                      (whenRetryAction: (String, RetryableException, Int) => Future[Unit],
                       whenFatalAction: (String, Throwable, Int) => Future[Unit],
                       whenSuccessAction: (String, Int) => Future[Unit])
@@ -25,29 +22,29 @@ class RetryableAction(action: => Future[Unit],
   def doIt(): Future[Unit] =
     doWithRetry(None)
 
-  private def doWithRetry(state: Option[ExponentialBackOff]): Future[Unit] = {
-    lazy val currentAttemptNumber: Int = state.map(_.restartCount).getOrElse(0)
+  private def doWithRetry(state: Option[AttemptParams]): Future[Unit] = {
+    lazy val currentAttemptNumber: Int = state.map(_.currentAttemptNumber).getOrElse(0)
 
     action.flatMap { _ =>
       whenSuccessAction(actionName, currentAttemptNumber)
     }.recover {
       case ex: RetryableException =>
-        val currentState = state.getOrElse(ExponentialBackOff(minBackoff, maxBackoff, randomFactor))
-        whenRetryAction(actionName, ex, currentState.restartCount)
+        val currentState = state.getOrElse(attemptParams)
+        whenRetryAction(actionName, ex, currentState.currentAttemptNumber)
         processRetry(currentState)
       case NonFatal(ex) =>
         whenFatalAction(actionName, ex, currentAttemptNumber)
     }
   }
 
-  private def processRetry(state: ExponentialBackOff): Unit = {
-    if (state.restartCount > maxAttempts) {
-      log.error(s"After '$maxAttempts' attempts stop send retry for [$actionName] at attempt number ${state.restartCount}")
+  private def processRetry(state: AttemptParams): Unit = {
+    if (state.currentAttemptNumber > maxRetryAttempts) {
+      log.error(s"After '$maxRetryAttempts' attempts stop send retry for [$actionName] at attempt number ${state.currentAttemptNumber}")
     } else {
-      val next = state.nextBackOff()
+      val next = state.nextAttemptParams
 
-      log.info(s"Scheduling resend event at attempt number ${state.restartCount} for [$actionName] after '${next.calculateDelay.toSeconds}' seconds")
-      scheduler.scheduleOnce(next.calculateDelay) {
+      log.info(s"Scheduling resend event at attempt number ${state.currentAttemptNumber} for [$actionName] after '${next.nextAttemptDelay.toSeconds}' seconds")
+      scheduler.scheduleOnce(next.nextAttemptDelay) {
         doWithRetry(Some(next))
       }
     }
@@ -67,16 +64,14 @@ object RetryableAction {
 
   def apply(action: => Future[Unit],
             actionName: String,
-            minBackoff: FiniteDuration,
-            maxBackoff: FiniteDuration,
-            maxAttempts: Int,
-            randomFactor: Double)
+            attemptParams: AttemptParams,
+            maxAttempts: Int)
            (whenRetryAction: (String, RetryableException, Int) => Future[Unit] = whenRetry,
             whenFatalAction: (String, Throwable, Int) => Future[Unit] = whenFatal,
             whenSuccessAction: (String, Int) => Future[Unit] = whenSuccess)
            (implicit system: ActorSystem, ctx: ExecutionContext): Future[Unit] =
     new RetryableAction(
-      action, actionName, minBackoff, maxBackoff, maxAttempts, randomFactor
+      action, actionName, attemptParams, maxAttempts
     )(
       whenRetryAction, whenFatalAction, whenSuccessAction
     ).doIt()

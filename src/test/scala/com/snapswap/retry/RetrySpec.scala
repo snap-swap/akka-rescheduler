@@ -163,7 +163,9 @@ class RetrySpec extends WordSpec with Matchers {
       (_: String, attemptNumber: Int) =>
         Future(callBack ! CallBackSuccessfulMessage(attemptNumber))
 
-    RetryableAction(action, "", FiniteDuration(1, MILLISECONDS), maxBackOff, maxAttempts, 0.1)(
+    val params = ExponentialBackOff(FiniteDuration(1, MILLISECONDS), maxBackOff, 0.1)
+
+    RetryableAction(action, "", params, maxAttempts)(
       whenRetryAction = whenRetry,
       whenFatalAction = whenFatal,
       whenSuccessAction = whenSuccess
