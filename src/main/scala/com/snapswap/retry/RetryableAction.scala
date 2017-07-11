@@ -19,7 +19,7 @@ class RetryableAction(action: => Future[Unit],
   private lazy val log = Logging(system, this.getClass)
   private lazy val scheduler = system.scheduler
 
-  def doIt(): Future[Unit] =
+  def run(): Future[Unit] =
     doWithRetry(None)
 
   private def doWithRetry(state: Option[AttemptParams]): Future[Unit] = {
@@ -39,7 +39,9 @@ class RetryableAction(action: => Future[Unit],
 
   private def processRetry(state: AttemptParams): Unit = {
     if (state.currentAttemptNumber > maxRetryAttempts) {
-      log.error(s"After '$maxRetryAttempts' attempts stop send retry for [$actionName] at attempt number ${state.currentAttemptNumber}")
+      val ex = LimitOfAttemptsReached(maxRetryAttempts, actionName, state.currentAttemptNumber)
+      log.error(s"${ex.getClass.getSimpleName}: ${ex.getMessage}")
+      whenFatalAction(actionName, ex, state.currentAttemptNumber)
     } else {
       val next = state.nextAttemptParams
 
@@ -74,5 +76,5 @@ object RetryableAction {
       action, actionName, attemptParams, maxAttempts
     )(
       whenRetryAction, whenFatalAction, whenSuccessAction
-    ).doIt()
+    ).run()
 }
