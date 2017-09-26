@@ -2,12 +2,12 @@ name := "akka-rescheduler"
 
 organization := "com.snapswap"
 
-version := "1.0.2"
+version := "1.0.3"
 
-scalaVersion := "2.11.8"
+scalaVersion := "2.11.11"
 
 libraryDependencies ++= {
-  val akkaV = "2.4.11"
+  val akkaV = "2.5.4"
   Seq(
     "com.typesafe.akka" %% "akka-actor" % akkaV,
     "org.scalatest" %% "scalatest" % "3.0.1" % "test",
