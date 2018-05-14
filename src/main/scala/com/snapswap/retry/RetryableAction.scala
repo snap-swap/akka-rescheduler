@@ -3,6 +3,7 @@ package com.snapswap.retry
 import akka.actor.ActorSystem
 import akka.event.Logging
 
+import scala.concurrent.duration.FiniteDuration
 import scala.concurrent.{ExecutionContext, Future}
 import scala.util.control.NonFatal
 
@@ -20,35 +21,32 @@ class RetryableAction(action: => Future[Unit],
   private lazy val scheduler = system.scheduler
 
   def run(): Future[Unit] =
-    doWithRetry(None)
+    doWithRetry(attemptParams)
 
-  private def doWithRetry(state: Option[AttemptParams]): Future[Unit] = {
-    lazy val currentAttemptNumber: Int = state.map(_.currentAttemptNumber).getOrElse(0)
-
+  private def doWithRetry(state: AttemptParams): Future[Unit] = {
     action.flatMap { _ =>
-      whenSuccessAction(actionName, currentAttemptNumber)
+      whenSuccessAction(actionName, state.getCurrentAttemptNumber)
     }.recoverWith {
       case ex: RetryableException =>
-        processRetry(ex, state.getOrElse(attemptParams))
+        processRetry(ex, state.tick, state.getNextAttemptDelay)
     }.recoverWith {
       case NonFatal(ex) =>
         log.error(ex, s"Recovery for action [$actionName] isn't possible")
-        whenFatalAction(actionName, ex, currentAttemptNumber)
+        whenFatalAction(actionName, ex, state.getCurrentAttemptNumber)
     }
   }
 
-  private def processRetry(ex: RetryableException, state: AttemptParams): Future[Unit] = {
-    if (state.currentAttemptNumber > maxRetryAttempts) {
-      Future.failed(LimitOfAttemptsReached(maxRetryAttempts, actionName, state.currentAttemptNumber))
+  private def processRetry(ex: RetryableException, state: AttemptParams, delay: FiniteDuration): Future[Unit] = {
+    if (state.getCurrentAttemptNumber > maxRetryAttempts) {
+      Future.failed(LimitOfAttemptsReached(maxRetryAttempts, actionName, state.getCurrentAttemptNumber))
     } else {
-      log.info(s"Trying to perform retry action for [$actionName], attempt ${state.currentAttemptNumber}")
-      whenRetryAction(actionName, ex, state.currentAttemptNumber).recover {
+      log.info(s"Trying to perform retry action for [$actionName], attempt ${state.getCurrentAttemptNumber}")
+      whenRetryAction(actionName, ex, state.getCurrentAttemptNumber).recover {
         case retryEx =>
-          log.info(s"Retry action for [$actionName] at attempt ${state.currentAttemptNumber} wasn't successful, $retryEx")
+          log.info(s"Retry action for [$actionName] at attempt ${state.getCurrentAttemptNumber} wasn't successful, $retryEx")
       }.map { _ =>
-        val next = state.getNextAttemptParams
-        log.info(s"Action [$actionName] after retrying attempt ${state.currentAttemptNumber} will be executed after ${next.nextAttemptDelay}")
-        scheduler.scheduleOnce(next.nextAttemptDelay)(doWithRetry(Some(next)))
+        log.info(s"Action [$actionName] after retrying attempt ${state.getCurrentAttemptNumber} will be executed after $delay")
+        scheduler.scheduleOnce(delay)(doWithRetry(state))
       }
     }
   }

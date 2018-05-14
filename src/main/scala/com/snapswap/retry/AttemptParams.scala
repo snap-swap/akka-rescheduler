@@ -4,9 +4,15 @@ import scala.concurrent.duration.FiniteDuration
 
 
 trait AttemptParams {
-  def nextAttemptDelay: FiniteDuration
 
-  def getNextAttemptParams: AttemptParams
+  def getNextAttemptDelay: FiniteDuration
 
-  def currentAttemptNumber: Int
+  private var currentAttemptNumber: Int = 0
+
+  final def getCurrentAttemptNumber: Int = currentAttemptNumber
+
+  final def tick: this.type = {
+    currentAttemptNumber += 1
+    this
+  }
 }
