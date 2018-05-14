@@ -27,27 +27,28 @@ class RetryableAction(action: => Future[Unit],
 
     action.flatMap { _ =>
       whenSuccessAction(actionName, currentAttemptNumber)
-    }.recover {
+    }.recoverWith {
       case ex: RetryableException =>
-        val currentState = state.getOrElse(attemptParams)
-        whenRetryAction(actionName, ex, currentState.currentAttemptNumber)
-        processRetry(currentState)
+        processRetry(ex, state.getOrElse(attemptParams))
+    }.recoverWith {
       case NonFatal(ex) =>
+        log.error(ex, s"Recovery for action [$actionName] isn't possible")
         whenFatalAction(actionName, ex, currentAttemptNumber)
     }
   }
 
-  private def processRetry(state: AttemptParams): Unit = {
+  private def processRetry(ex: RetryableException, state: AttemptParams): Future[Unit] = {
     if (state.currentAttemptNumber > maxRetryAttempts) {
-      val ex = LimitOfAttemptsReached(maxRetryAttempts, actionName, state.currentAttemptNumber)
-      log.error(s"${ex.getClass.getSimpleName}: ${ex.getMessage}")
-      whenFatalAction(actionName, ex, state.currentAttemptNumber)
+      Future.failed(LimitOfAttemptsReached(maxRetryAttempts, actionName, state.currentAttemptNumber))
     } else {
-      val next = state.nextAttemptParams
-
-      log.info(s"Scheduling resend event at attempt number ${state.currentAttemptNumber} for [$actionName] after '${next.nextAttemptDelay.toSeconds}' seconds")
-      scheduler.scheduleOnce(next.nextAttemptDelay) {
-        doWithRetry(Some(next))
+      log.info(s"Trying to perform retry action for [$actionName], attempt ${state.currentAttemptNumber}")
+      whenRetryAction(actionName, ex, state.currentAttemptNumber).recover {
+        case retryEx =>
+          log.info(s"Retry action for [$actionName] at attempt ${state.currentAttemptNumber} wasn't successful, $retryEx")
+      }.map { _ =>
+        val next = state.getNextAttemptParams
+        log.info(s"Action [$actionName] after retrying attempt ${state.currentAttemptNumber} will be executed after ${next.nextAttemptDelay}")
+        scheduler.scheduleOnce(next.nextAttemptDelay)(doWithRetry(Some(next)))
       }
     }
   }

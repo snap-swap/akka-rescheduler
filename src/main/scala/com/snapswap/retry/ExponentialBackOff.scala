@@ -30,7 +30,7 @@ case class ExponentialBackOff(protected val minBackoff: FiniteDuration,
     }
   }
 
-  override def nextAttemptParams: ExponentialBackOff = {
+  override def getNextAttemptParams: ExponentialBackOff = {
     copy(currentAttemptNumber = currentAttemptNumber + 1)
   }
 }

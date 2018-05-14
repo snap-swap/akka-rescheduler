@@ -6,5 +6,5 @@ trait RetryableException extends NoStackTrace
 
 case class LimitOfAttemptsReached(maxRetryAttempts: Int, actionName: String, currentAttemptNumber: Int) extends NoStackTrace {
   override def getMessage =
-    s"After '$maxRetryAttempts' attempts stop send retry for [$actionName] at attempt number $currentAttemptNumber"
+    s"After $currentAttemptNumber attempts stop send retries for [$actionName], max allowed attempts limit reached (max attempts: '$maxRetryAttempts')"
 }

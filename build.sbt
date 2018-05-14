@@ -2,7 +2,7 @@ name := "akka-rescheduler"
 
 organization := "com.snapswap"
 
-version := "1.0.4"
+version := "1.0.4.1"
 
 scalaVersion := "2.11.11"
 

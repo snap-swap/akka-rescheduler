@@ -1,93 +1,79 @@
 package com.snapswap.retry
 
 import akka.actor.{ActorRef, ActorSystem}
-import akka.testkit.TestProbe
-import org.scalatest.{Matchers, WordSpec}
+import akka.testkit.{TestKit, TestProbe}
+import org.scalatest.{Matchers, WordSpecLike}
 
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.Future
-import scala.concurrent.duration.{FiniteDuration, _}
+import scala.concurrent.duration._
 import scala.util.control.NoStackTrace
 
 
-class RetrySpec extends WordSpec with Matchers {
+class RetrySpec extends TestKit(ActorSystem.create("RetrySpec")) with WordSpecLike with Matchers {
 
-  implicit val system = ActorSystem.create("test")
+  val maxBackOff = 500.millis
 
-  "retry" should {
+  "Retryable action" should {
     "retry while retryable exception is occurred" in {
       val listener = TestProbe()
-      val retryAttempts = 2
-      val sender = new Sender(listener.ref, Retry(retryAttempts))
-
-      // after all retries there was last successful attempt
-      val expectedSenderAttempts = retryAttempts + 1
+      val sender = new Sender(listener.ref, 2, 100500)
+      // after all retries should be successful execution
+      val expectedExecutions = sender.numberOfRetries + 1
 
       action(sender.send(), 10)
-      listener.expectMsg(maxBackOff * retryAttempts.toLong, CallBackSuccessfulMessage(expectedSenderAttempts))
-      sender.getAttemptsCounter shouldBe expectedSenderAttempts
+      listener.expectMsg(maxBackOff * sender.numberOfRetries, CallBackSuccessfulMessage(expectedExecutions))
+      sender.getAttemptsCounter shouldBe expectedExecutions
     }
-    "success without retry if there is no any exceptions" in {
+    "success without retry if there were no any exceptions" in {
       val listener = TestProbe()
-      val retryAttempts = 0
-      val sender = new Sender(listener.ref, Retry(retryAttempts))
+      val sender = new Sender(listener.ref, 0, 100500)
+      // there are no any retries, only one successful attempt
+      val expectedSenderAttempts = sender.numberOfRetries + 1
 
       action(sender.send(), 10)
-
-      // there are no any retries, only one successful attempt
-      val expectedSenderAttempts = retryAttempts + 1
-
       listener.expectMsg(maxBackOff, CallBackSuccessfulMessage(expectedSenderAttempts))
       sender.getAttemptsCounter shouldBe expectedSenderAttempts
     }
-    "stop retry if fatal exception is occurred" in {
+    "stop retry if fatal exception was occurred" in {
       val listener = TestProbe()
-      val retryAttempts = 2
-      val sender = new Sender(listener.ref, Fatal(retryAttempts))
-
-      val expectedSenderAttempts = retryAttempts + 1 // after all retries there was last fatal attempt
+      val sender = new Sender(listener.ref, 100500, 2)
+      // after all retries should be last fatal execution
+      val expectedSenderAttempts = sender.fatalExceptionAfterRetries + 1
 
       action(sender.send(), 10)
-
-      listener.expectNoMsg(maxBackOff * retryAttempts.toLong)
+      listener.expectNoMsg(maxBackOff * sender.fatalExceptionAfterRetries)
       sender.getAttemptsCounter shouldBe expectedSenderAttempts
     }
-    "stop retry if max retry attempt limit is reached" in {
+    "stop retry if max retry attempt limit was reached" in {
       val listener = TestProbe()
       val maxRetryAttempts = 2
-      val sender = new Sender(listener.ref, Retry(10))
+      val sender = new Sender(listener.ref, 100500, 100500)
 
       action(sender.send(), maxRetryAttempts)
-
       listener.expectNoMsg(maxBackOff * maxRetryAttempts.toLong)
-      sender.getAttemptsCounter shouldBe maxRetryAttempts + 1 // after all retries there was last out of limit attempt
+      sender.getAttemptsCounter shouldBe maxRetryAttempts + 1 // after all retries should be last out of limit attempt
     }
-
     "perform retry action every retry attempt" in {
       val callBack = TestProbe()
-      val sender = new Sender(TestProbe().ref, Retry(10))
+      val sender = new Sender(TestProbe().ref, 100500, 100500)
 
       action(sender.send(), 2, callBack.ref)
-
       callBack.expectMsgAllOf(maxBackOff * 2.toLong, CallBackRetryMessage(1), CallBackRetryMessage(2))
     }
-    "perform failed action if fatal attempt will occurred" in {
+    "perform failed action if fatal exception was occurred" in {
       val callBack = TestProbe()
-      val retryAttempts = 0
-      val sender = new Sender(TestProbe().ref, Fatal(retryAttempts))
+      val sender = new Sender(TestProbe().ref, 100500, 0)
 
       action(sender.send(), 10, callBack.ref)
-
-      callBack.expectMsg(maxBackOff, CallBackFatalMessage(retryAttempts))
+      callBack.expectMsg(maxBackOff, CallBackFatalMessage(sender.fatalExceptionAfterRetries))
     }
     "perform success action when succeed" in {
       val callBack = TestProbe()
-      val retryAttempts = 0
-      val sender = new Sender(TestProbe().ref, Retry(retryAttempts))
+      val sender = new Sender(TestProbe().ref, 0, 100500)
 
       action(sender.send(), 10, callBack.ref)
-
-      callBack.expectMsg(maxBackOff, CallBackSuccessfulMessage(retryAttempts))
+      callBack.expectMsg(maxBackOff, CallBackSuccessfulMessage(sender.numberOfRetries))
     }
   }
 
@@ -96,14 +82,6 @@ class RetrySpec extends WordSpec with Matchers {
   case class RetryableError() extends RetryableException
 
   case class FatalError(failedAtAttemptNo: Int) extends NoStackTrace
-
-
-  // Classes for action executor behaviour handling
-  trait ActionHandle
-
-  case class Retry(retryAttempts: Int) extends ActionHandle
-
-  case class Fatal(retryAttempts: Int) extends ActionHandle
 
 
   // Messages for test actors
@@ -117,42 +95,31 @@ class RetrySpec extends WordSpec with Matchers {
 
 
   // Action executor, it will be passed into retry executor
-  class Sender(listener: ActorRef, handle: ActionHandle) {
-    private var attemptsCounter: Int = 0
+  class Sender(listener: ActorRef, val numberOfRetries: Int, val fatalExceptionAfterRetries: Int) {
+    private var executionsCounter: Int = 0
 
-    def getAttemptsCounter = attemptsCounter
+    def getAttemptsCounter: Int = executionsCounter
 
     def send(): Future[Unit] = {
-      attemptsCounter = attemptsCounter + 1
+      executionsCounter = executionsCounter + 1
 
-      handle match {
-        case Retry(retryAttempts) if attemptsCounter <= retryAttempts =>
-          throwRetryable()
-        case Fatal(retryAttempts) =>
-          if (attemptsCounter <= retryAttempts) {
-            throwRetryable()
-          } else {
-            println(s"failed at attempt number $attemptsCounter")
-            Future.failed(FatalError(attemptsCounter))
-          }
-        case _ =>
-          Future.successful(println(s"successful at attempt number $attemptsCounter")).map(_ =>
-            listener ! CallBackSuccessfulMessage(attemptsCounter)
-          )
+      if (executionsCounter <= numberOfRetries && executionsCounter <= fatalExceptionAfterRetries) {
+        println(s"retry at attempt number $executionsCounter")
+        Future.failed(RetryableError())
+      } else if (executionsCounter > fatalExceptionAfterRetries) {
+        println(s"failed at execution number $executionsCounter")
+        Future.failed(FatalError(executionsCounter))
+      } else {
+        println(s"successful at execution number $executionsCounter")
+        Future(listener ! CallBackSuccessfulMessage(executionsCounter))
       }
+
     }
 
-    private def throwRetryable() = {
-      println(s"retry at attempt number $attemptsCounter")
-      Future.failed(RetryableError())
-    }
   }
 
 
-  // Retry executor
-  val maxBackOff = FiniteDuration(500, MILLISECONDS)
-
-  def action(action: => Future[Unit], maxAttempts: Int, callBack: ActorRef = TestProbe().ref) = {
+  def action(action: => Future[Unit], maxAttempts: Int, callBack: ActorRef = TestProbe().ref): Future[Unit] = {
     val whenRetry: (String, RetryableException, Int) => Future[Unit] =
       (_: String, _: RetryableException, attemptNumber: Int) =>
         Future(callBack ! CallBackRetryMessage(attemptNumber))
