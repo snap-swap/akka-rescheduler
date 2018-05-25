@@ -1,28 +1,36 @@
 package com.snapswap.retry
 
-import java.util.concurrent.ThreadLocalRandom
-
 import scala.concurrent.duration._
 
 
-case class ExponentialBackOff(protected val minBackoff: FiniteDuration,
-                              protected val maxBackoff: FiniteDuration,
-                              protected val randomFactor: Double) extends AttemptParams {
-  require(minBackoff > Duration.Zero, "minBackoff must be > 0")
-  require(maxBackoff >= minBackoff, "maxBackoff must be >= minBackoff")
-  require(0.0 <= randomFactor && randomFactor <= 1.0, "randomFactor must be between 0.0 and 1.0")
+case class ExponentialBackOff(protected val minBackOff: FiniteDuration,
+                              protected val maxBackOff: FiniteDuration,
+                              protected val scaleFactor: Double) extends AttemptParams {
+  require(minBackOff > Duration.Zero, "minBackOff must be > 0")
+  require(maxBackOff >= minBackOff, "maxBackOff should be >= minBackOff")
+
+  private var stopIncreasing: Boolean = false
 
   override def getNextAttemptDelay: FiniteDuration = {
-    val rnd = 1.0 + ThreadLocalRandom.current().nextDouble() * randomFactor
-    if (getCurrentAttemptNumber >= 30) {
-      // Duration overflow protection (> 100 years)
-      maxBackoff
+    if (stopIncreasing) {
+      maxBackOff
     } else {
-      maxBackoff.min(minBackoff * math.pow(2, getCurrentAttemptNumber.toDouble)) * rnd match {
-        case f: FiniteDuration ⇒ f
-        case _ ⇒ maxBackoff
-      }
+      val nextDelayNanos: Long = math.min(
+        maxBackOff.toNanos,
+        (minBackOff.toNanos * math.exp(scaleFactor * getCurrentAttemptNumber)).toLong
+      )
+
+      if (maxBackOff.toNanos <= nextDelayNanos)
+        stopIncreasing = true
+
+      nextDelayNanos.nanos
     }
   }
-
 }
+
+case class LinearBackOff(initialBackOff: FiniteDuration) extends AttemptParams {
+  override def getNextAttemptDelay: FiniteDuration =
+    initialBackOff * getCurrentAttemptNumber.toLong
+}
+
+case class ConstantBackOff(getNextAttemptDelay: FiniteDuration) extends AttemptParams
