@@ -1,6 +1,6 @@
 package com.snapswap.retry
 
-import akka.actor.ActorSystem
+import akka.actor.{ActorSystem, Cancellable}
 import akka.event.Logging
 
 import scala.concurrent.duration.FiniteDuration
@@ -20,19 +20,32 @@ class RetryableAction(action: => Future[Unit],
   private lazy val log = Logging(system, this.getClass)
   private lazy val scheduler = system.scheduler
 
+  private var canceled: Boolean = false
+  private var scheduled: Option[Cancellable] = None
+
   def run(): Future[Unit] =
     doWithRetry(attemptParams)
 
+  def cancel(): Boolean = {
+    canceled = true
+    log.info(s"action [$actionName] cancelled")
+    scheduled.map(_.cancel()).getOrElse(canceled)
+  }
+
   private def doWithRetry(state: AttemptParams): Future[Unit] = {
-    action.flatMap { _ =>
-      whenSuccessAction(actionName, state.getCurrentAttemptNumber)
-    }.recoverWith {
-      case ex: RetryableException =>
-        processRetry(ex, state.tick, state.getNextAttemptDelay)
-    }.recoverWith {
-      case NonFatal(ex) =>
-        log.error(ex, s"Recovery for action [$actionName] isn't possible")
-        whenFatalAction(actionName, ex, state.getCurrentAttemptNumber)
+    if (canceled) {
+      Future.successful(())
+    } else {
+      action.flatMap { _ =>
+        whenSuccessAction(actionName, state.getCurrentAttemptNumber)
+      }.recoverWith {
+        case ex: RetryableException =>
+          processRetry(ex, state.tick, state.getNextAttemptDelay)
+      }.recoverWith {
+        case NonFatal(ex) =>
+          log.error(ex, s"Recovery for action [$actionName] isn't possible")
+          whenFatalAction(actionName, ex, state.getCurrentAttemptNumber)
+      }
     }
   }
 
@@ -46,7 +59,7 @@ class RetryableAction(action: => Future[Unit],
           log.info(s"Retry action for [$actionName] at attempt ${state.getCurrentAttemptNumber} wasn't successful, $retryEx")
       }.map { _ =>
         log.info(s"Action [$actionName] after retrying attempt ${state.getCurrentAttemptNumber} will be executed after $delay")
-        scheduler.scheduleOnce(delay)(doWithRetry(state))
+        scheduled = Some(scheduler.scheduleOnce(delay)(doWithRetry(state)))
       }
     }
   }
@@ -54,26 +67,17 @@ class RetryableAction(action: => Future[Unit],
 
 
 object RetryableAction {
-  private val whenRetry: (String, RetryableException, Int) => Future[Unit] =
-    (actionName: String, retryableException: RetryableException, retryAttemptNumber: Int) => Future.successful(())
-
-  private val whenFatal: (String, Throwable, Int) => Future[Unit] =
-    (actionName: String, fatalException: Throwable, retryAttemptNumber: Int) => Future.successful(())
-
-  private val whenSuccess: (String, Int) => Future[Unit] =
-    (actionName: String, retryAttemptNumber: Int) => Future.successful(())
-
   def apply(action: => Future[Unit],
             actionName: String,
             attemptParams: AttemptParams,
             maxAttempts: Int)
-           (whenRetryAction: (String, RetryableException, Int) => Future[Unit] = whenRetry,
-            whenFatalAction: (String, Throwable, Int) => Future[Unit] = whenFatal,
-            whenSuccessAction: (String, Int) => Future[Unit] = whenSuccess)
-           (implicit system: ActorSystem, ctx: ExecutionContext): Future[Unit] =
+           (whenRetryAction: (String, RetryableException, Int) => Future[Unit] = (_, _, _) => Future.successful(()),
+            whenFatalAction: (String, Throwable, Int) => Future[Unit] = (_, _, _) => Future.successful(()),
+            whenSuccessAction: (String, Int) => Future[Unit] = (_, _) => Future.successful(()))
+           (implicit system: ActorSystem, ctx: ExecutionContext): RetryableAction =
     new RetryableAction(
       action, actionName, attemptParams, maxAttempts
     )(
       whenRetryAction, whenFatalAction, whenSuccessAction
-    ).run()
+    )
 }

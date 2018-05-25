@@ -12,7 +12,7 @@ import scala.util.control.NoStackTrace
 
 class RetrySpec extends TestKit(ActorSystem.create("RetrySpec")) with WordSpecLike with Matchers {
 
-  val maxBackOff = 500.millis
+  private val maxBackOff = 500.millis
 
   "Retryable action" should {
     "retry while retryable exception is occurred" in {
@@ -21,8 +21,8 @@ class RetrySpec extends TestKit(ActorSystem.create("RetrySpec")) with WordSpecLi
       // after all retries should be successful execution
       val expectedExecutions = sender.numberOfRetries + 1
 
-      action(sender.send(), 10)
-      listener.expectMsg(maxBackOff * sender.numberOfRetries, CallBackSuccessfulMessage(expectedExecutions))
+      action(sender.send(), 10).run()
+      listener.expectMsg(maxBackOff * sender.numberOfRetries.toLong, CallBackSuccessfulMessage(expectedExecutions))
       sender.getAttemptsCounter shouldBe expectedExecutions
     }
     "success without retry if there were no any exceptions" in {
@@ -31,7 +31,7 @@ class RetrySpec extends TestKit(ActorSystem.create("RetrySpec")) with WordSpecLi
       // there are no any retries, only one successful attempt
       val expectedSenderAttempts = sender.numberOfRetries + 1
 
-      action(sender.send(), 10)
+      action(sender.send(), 10).run()
       listener.expectMsg(maxBackOff, CallBackSuccessfulMessage(expectedSenderAttempts))
       sender.getAttemptsCounter shouldBe expectedSenderAttempts
     }
@@ -41,8 +41,8 @@ class RetrySpec extends TestKit(ActorSystem.create("RetrySpec")) with WordSpecLi
       // after all retries should be last fatal execution
       val expectedSenderAttempts = sender.fatalExceptionAfterRetries + 1
 
-      action(sender.send(), 10)
-      listener.expectNoMsg(maxBackOff * sender.fatalExceptionAfterRetries)
+      action(sender.send(), 10).run()
+      listener.expectNoMsg(maxBackOff * sender.fatalExceptionAfterRetries.toLong)
       sender.getAttemptsCounter shouldBe expectedSenderAttempts
     }
     "stop retry if max retry attempt limit was reached" in {
@@ -50,7 +50,7 @@ class RetrySpec extends TestKit(ActorSystem.create("RetrySpec")) with WordSpecLi
       val maxRetryAttempts = 2
       val sender = new Sender(listener.ref, 100500, 100500)
 
-      action(sender.send(), maxRetryAttempts)
+      action(sender.send(), maxRetryAttempts).run()
       listener.expectNoMsg(maxBackOff * maxRetryAttempts.toLong)
       sender.getAttemptsCounter shouldBe maxRetryAttempts + 1 // after all retries should be last out of limit attempt
     }
@@ -58,22 +58,35 @@ class RetrySpec extends TestKit(ActorSystem.create("RetrySpec")) with WordSpecLi
       val callBack = TestProbe()
       val sender = new Sender(TestProbe().ref, 100500, 100500)
 
-      action(sender.send(), 2, callBack.ref)
+      action(sender.send(), 2, callBack.ref).run()
       callBack.expectMsgAllOf(maxBackOff * 2.toLong, CallBackRetryMessage(1), CallBackRetryMessage(2))
     }
     "perform failed action if fatal exception was occurred" in {
       val callBack = TestProbe()
       val sender = new Sender(TestProbe().ref, 100500, 0)
 
-      action(sender.send(), 10, callBack.ref)
+      action(sender.send(), 10, callBack.ref).run()
       callBack.expectMsg(maxBackOff, CallBackFatalMessage(sender.fatalExceptionAfterRetries))
     }
     "perform success action when succeed" in {
       val callBack = TestProbe()
       val sender = new Sender(TestProbe().ref, 0, 100500)
 
-      action(sender.send(), 10, callBack.ref)
+      action(sender.send(), 10, callBack.ref).run()
       callBack.expectMsg(maxBackOff, CallBackSuccessfulMessage(sender.numberOfRetries))
+    }
+    "be cancellable" in {
+      val callBack = TestProbe()
+      val sender = new Sender(TestProbe().ref, 100500, 100500)
+      val a = action(sender.send(), 1050, callBack.ref)
+      a.run()
+      callBack.expectMsgAllOf(maxBackOff * 2L, CallBackRetryMessage(1), CallBackRetryMessage(2))
+      val cancellationResult = callBack.expectMsgPF(maxBackOff * 2L){
+        case CallBackRetryMessage(3) =>
+          a.cancel()
+      }
+      cancellationResult shouldBe true
+      callBack.expectNoMsg(maxBackOff * 5L)
     }
   }
 
@@ -119,7 +132,7 @@ class RetrySpec extends TestKit(ActorSystem.create("RetrySpec")) with WordSpecLi
   }
 
 
-  def action(action: => Future[Unit], maxAttempts: Int, callBack: ActorRef = TestProbe().ref): Future[Unit] = {
+  def action(action: => Future[Unit], maxAttempts: Int, callBack: ActorRef = TestProbe().ref): RetryableAction = {
     val whenRetry: (String, RetryableException, Int) => Future[Unit] =
       (_: String, _: RetryableException, attemptNumber: Int) =>
         Future(callBack ! CallBackRetryMessage(attemptNumber))

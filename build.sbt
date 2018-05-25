@@ -2,9 +2,21 @@ name := "akka-rescheduler"
 
 organization := "com.snapswap"
 
-version := "1.0.5"
+version := "1.0.6"
 
 scalaVersion := "2.11.11"
+
+scalacOptions := Seq(
+  "-feature",
+  "-unchecked",
+  "-deprecation",
+  "-language:higherKinds",
+  "-language:implicitConversions",
+  "-Xfatal-warnings",
+  "-Ywarn-dead-code",
+  "-Ywarn-numeric-widen",
+  "-Ywarn-unused-import"
+)
 
 libraryDependencies ++= {
   val akkaV = "2.5.4"
