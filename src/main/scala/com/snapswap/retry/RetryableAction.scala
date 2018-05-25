@@ -38,7 +38,7 @@ class RetryableAction(action: => Future[Unit],
   def cancel(): Boolean = {
     launched = true
     canceled = true
-    log.info(s"action [$actionName] cancelled")
+    log.debug(s"action [$actionName] cancelled")
     scheduled.map(_.cancel()).getOrElse(canceled)
   }
 
@@ -67,12 +67,12 @@ class RetryableAction(action: => Future[Unit],
     if (state.getCurrentAttemptNumber > maxRetryAttempts) {
       Future.failed(LimitOfAttemptsReached(maxRetryAttempts, actionName, state.getCurrentAttemptNumber))
     } else {
-      log.info(s"Trying to perform retry action for [$actionName], attempt ${state.getCurrentAttemptNumber}")
+      log.debug(s"Trying to perform retry action for [$actionName], attempt ${state.getCurrentAttemptNumber}")
       whenRetryAction(actionName, ex, state.getCurrentAttemptNumber).recover {
         case retryEx =>
-          log.info(s"Retry action for [$actionName] at attempt ${state.getCurrentAttemptNumber} wasn't successful, $retryEx")
+          log.debug(s"Retry action for [$actionName] at attempt ${state.getCurrentAttemptNumber} wasn't successful, $retryEx")
       }.map { _ =>
-        log.info(s"Action [$actionName] after retrying attempt ${state.getCurrentAttemptNumber} will be executed after $delay")
+        log.debug(s"Action [$actionName] after retrying attempt ${state.getCurrentAttemptNumber} will be executed after $delay")
         scheduled = Some(scheduler.scheduleOnce(delay)(doWithRetry(state)))
       }
     }
